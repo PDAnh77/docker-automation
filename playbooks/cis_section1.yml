@@ -1,0 +1,41 @@
+---
+- name: Apply CIS Level 1 - Section 1 (Host Audit Rules)
+  hosts: swarm
+  become: yes
+  vars:
+    script_local: "../scripts/cis_section1.sh"
+    script_remote: "/tmp/cis_section1.sh"
+
+  tasks:
+    # --- SAFETY CHECK (Hỏi xác nhận) ---
+    - name: "Confirm Section 1 Execution"
+      pause:
+        prompt: "WARNING: Apply Auditd Rules on all nodes. Continue? (yes/no)"
+      register: prompt
+      when: not ansible_check_mode
+      run_once: true
+
+    - name: "Abort Execution"
+      meta: end_play
+      when: 
+        - not ansible_check_mode
+        - prompt.user_input | default('no') | lower not in ['yes', 'y']
+
+    # --- EXECUTION ---
+    - name: Copy Audit Script
+      copy:
+        src: "{{ script_local }}"
+        dest: "{{ script_remote }}"
+        mode: '0755'
+
+    - name: Execute Audit Script
+      shell: "{{ script_remote }}"
+      register: output
+      changed_when: "'[APPLY]' in output.stdout or '[INSTALL]' in output.stdout"
+
+    - name: Show Result
+      debug:
+        msg: "{{ output.stdout_lines }}"
+
+    - name: Cleanup Script
+      file: path="{{ script_remote }}" state=absent

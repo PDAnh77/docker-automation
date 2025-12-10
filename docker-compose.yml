@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+    # --- 1. NGINX (Load Balancer & Reverse Proxy) ---
+    nginx:
+        image: nginxinc/nginx-unprivileged:alpine
+        ports:
+            - target: 8080
+              published: 80
+              protocol: tcp
+              mode: host
+        # Dùng Configs thay vì Volume: Swarm tự động phân phối file này đến mọi Worker
+        configs:
+            - source: my_nginx_config
+              target: /etc/nginx/nginx.conf
+        networks:
+            - app_net
+        read_only: true
+        volumes:
+            - type: tmpfs
+              target: /tmp # Nginx unprivileged ghi PID file vào đây
+            - type: tmpfs
+              target: /var/cache/nginx # Nơi Nginx lưu cache/buffer tạm
+            - type: tmpfs
+              target: /var/run # Đề phòng các tiến trình con cần ghi PID
+        deploy:
+            mode: global
+            resources:
+                limits:
+                    cpus: "0.3"
+                    memory: 128M
+                reservations:
+                    cpus: "0.1"
+                    memory: 64M
+            placement:
+                constraints:
+                    - node.role == worker
+            restart_policy:
+                condition: any
+                delay: 5s
+        healthcheck:
+            test: "wget -q --spider http://127.0.0.1:8080/ || exit 1"
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 10s
+        cap_drop:
+            - NET_RAW
+
+    # --- 2. API SERVICE (Backend Python) ---
+    api:
+        image: pdanh/my-app:1.0.0
+        secrets:
+            - source: database_url
+              target: DATABASE_URL
+            - source: database_key
+              target: DATABASE_key
+            - source: secret_jwt_key
+              target: SECRET_JWT_KEY
+            - source: render_app_url
+              target: RENDER_APP_URL
+        deploy:
+            replicas: 2
+            update_config:
+                parallelism: 1
+                delay: 10s
+            resources:
+                limits:
+                    cpus: "0.7"
+                    memory: 512M
+                reservations:
+                    cpus: "0.3"
+                    memory: 256M
+            restart_policy:
+                condition: on-failure
+                delay: 10s
+                max_attempts: 5
+            placement:
+                constraints:
+                    - node.role == worker
+        networks:
+            - app_net
+        read_only: true
+        environment:
+            - PYTHONDONTWRITEBYTECODE=1
+            - MPLCONFIGDIR=/tmp
+        volumes:
+            - type: tmpfs
+              target: /tmp
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+            interval: 30s
+            timeout: 30s
+            retries: 3
+            start_period: 120s
+        cap_drop:
+            - NET_RAW
+
+
+# --- NETWORKS, VOLUMES & CONFIGS ---
+networks:
+    app_net:
+        driver: overlay
+        driver_opts:
+            encrypted: "true"
+
+# Định nghĩa Configs: Đọc file từ máy Manager và lưu vào Swarm DB
+configs:
+    my_nginx_config:
+        file: ./nginx.conf
+
+# --- KHAI BÁO SECRETS ---
+secrets:
+    database_url:
+        external: true
+    database_key:
+        external: true
+    secret_jwt_key:
+        external: true
+    render_app_url:
+        external: true

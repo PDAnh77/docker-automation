@@ -1,0 +1,55 @@
+---
+- name: Apply CIS Level 1 - Section 6 (Docker Security Operations)
+  hosts: all
+  become: yes
+  vars:
+    script_local: "../scripts/cis_section6.sh"
+    script_remote: "/tmp/cis_section6.sh"
+
+  tasks:
+    - name: "Confirm Execution"
+      pause:
+        prompt: "WARNING: Do you want to execute this script? (yes/no)"
+      register: prompt_exec
+      run_once: true
+      when: not ansible_check_mode
+
+    - name: "Abort Execution"
+      meta: end_play
+      when: 
+        - not ansible_check_mode
+        - prompt_exec.user_input | default('no') | trim | lower not in ['yes', 'y']
+
+    - name: "Confirm Cleanup Mode"
+      pause:
+        prompt: "WARNING: ENABLE CLEANUP (delete unused images/containers)? (yes/no)"
+      register: prompt_cleanup
+      run_once: true
+      when: not ansible_check_mode
+
+    # Tính toán biến enable_cleanup (Ansible sẽ hiểu đây là Boolean True/False)
+    - name: Set Cleanup Flag
+      set_fact:
+        enable_cleanup: "{{ 'true' if prompt_cleanup.user_input | default('no') | trim | lower in ['yes', 'y'] else 'false' }}"
+
+    # --- THỰC THI SCRIPT ---
+    - name: Copy Operations Script
+      copy:
+        src: "{{ script_local }}"
+        dest: "{{ script_remote }}"
+        mode: '0755'
+
+    - name: Execute Script
+      # Thêm filter | lower để đảm bảo Bash nhận được chuỗi "true" thường
+      shell: "{{ script_remote }} {{ enable_cleanup | lower }}"
+      register: script_output
+      changed_when: "'ACTION: Pruning' in script_output.stdout"
+
+    - name: Show Security Operations Report
+      debug:
+        msg: "{{ script_output.stdout_lines }}"
+
+    - name: Cleanup Script File
+      file:
+        path: "{{ script_remote }}"
+        state: absent

@@ -1,0 +1,137 @@
+---
+# --- CẤU HÌNH MANAGER ---
+- name: Apply CIS Level 1 - Section 7 (Setup Swarm Manager)
+  hosts: managers
+  become: yes
+  vars:
+    script_local: "../scripts/cis_section7_manager.sh"
+    script_remote: "/tmp/cis_section7_manager.sh"
+    # Đường dẫn script tạo secret và file env
+    secret_script_local: "../scripts/create_secrets.sh"
+    secret_script_remote: "/tmp/create_secrets.sh"
+    env_file_local: "../.env"
+    env_file_remote: "/tmp/.env"
+    # Đường dẫn lưu file backup key trên máy chạy Ansible
+    backup_key_path: "../swarm_unlock_key.txt"
+
+  tasks:
+    # 1. Safety Check
+    - name: "Confirm Swarm Setup"
+      pause:
+        prompt: "WARNING: Setup Swarm with Autolock enabled. Continue? (yes/no)"
+      register: prompt
+      when: not ansible_check_mode
+      run_once: true
+
+    - name: "Abort Execution"
+      fail:
+        msg: "Playbook aborted by user."
+      when:
+        - not ansible_check_mode
+        - prompt.user_input | default('no') | lower not in ['yes', 'y']
+
+    # 2. Chạy Script Manager (Init Swarm)
+    - name: Copy Manager Script
+      copy:
+        src: "{{ script_local }}"
+        dest: "{{ script_remote }}"
+        mode: '0755'
+
+    - name: Execute Manager Script
+      shell: "{{ script_remote }} {{ ansible_host }}"
+      register: manager_output
+      changed_when: "'[INIT]' in manager_output.stdout or '[APPLY]' in manager_output.stdout"
+
+    - name: Show Manager Logs
+      debug:
+        msg: "{{ manager_output.stdout_lines }}"
+
+    # 3. Trích xuất Token và Unlock Key
+    - name: Extract Secrets from Output
+      set_fact:
+        swarm_token: "{{ manager_output.stdout | regex_search('JOIN_TOKEN:(.+)', '\\1') | first }}"
+        swarm_unlock_key: "{{ manager_output.stdout | regex_search('UNLOCK_KEY:(.+)', '\\1') | first }}"
+        manager_connect_ip: "{{ ansible_host }}"
+
+    - name: "BACKUP SWARM UNLOCK KEY (Localhost)"
+      local_action: 
+        module: copy
+        content: "UNLOCK KEY: {{ swarm_unlock_key }}"
+        dest: "{{ backup_key_path }}"
+      become: no
+      when: swarm_unlock_key is defined
+
+    # --- TẠO SECRET TỪ .ENV ---
+    - name: Check if local .env exists
+      stat:
+        path: "{{ env_file_local }}"
+      delegate_to: localhost
+      register: local_env_stat
+
+    - name: Process Docker Secrets (Only if .env exists)
+      block:
+        - name: Copy Secret Script
+          copy:
+            src: "{{ secret_script_local }}"
+            dest: "{{ secret_script_remote }}"
+            mode: '0755'
+
+        - name: Copy .env file to Manager (Temporary)
+          copy:
+            src: "{{ env_file_local }}"
+            dest: "{{ env_file_remote }}"
+            mode: '0400' # Quyền hạn chế chỉ owner đọc được
+
+        - name: Execute Secret Creation Script
+          shell: "{{ secret_script_remote }}"
+          args:
+            chdir: "/tmp" # Đảm bảo script tìm thấy file .env cùng thư mục
+          register: secret_output
+          # Task này thay đổi nếu script báo "Created"
+          changed_when: "'Created secret' in secret_output.stdout"
+
+        - name: Show Secret Creation Logs
+          debug:
+            msg: "{{ secret_output.stdout_lines }}"
+
+        - name: Remove .env file from Manager (Security Cleanup)
+          file:
+            path: "{{ env_file_remote }}"
+            state: absent
+      when: local_env_stat.stat.exists
+    # ---------------------------------------------
+
+    - name: Register Global Vars for Workers
+      add_host:
+        name: "SWARM_INFO"
+        token: "{{ swarm_token }}"
+        manager_ip: "{{ manager_connect_ip }}"
+
+# --- CẤU HÌNH WORKER ---
+- name: Apply CIS Level 1 - Section 7 (Join Workers to Swarm)
+  hosts: workers
+  become: yes
+  vars:
+    script_local: "../scripts/cis_section7_worker.sh"
+    script_remote: "/tmp/cis_section7_worker.sh"
+    token: "{{ hostvars['SWARM_INFO']['token'] }}"
+    manager: "{{ hostvars['SWARM_INFO']['manager_ip'] }}"
+
+  tasks:
+    - name: Copy Worker Script
+      copy:
+        src: "{{ script_local }}"
+        dest: "{{ script_remote }}"
+        mode: '0755'
+
+    - name: Execute Worker Script
+      shell: "{{ script_remote }} {{ token }} {{ manager }} {{ ansible_host }}"
+      register: worker_output
+      changed_when: "'[JOIN]' in worker_output.stdout"
+
+    - name: Show Worker Logs
+      debug:
+        msg: "{{ worker_output.stdout_lines }}"
+
+    - name: Cleanup Script
+      file: path="{{ script_remote }}" state=absent
