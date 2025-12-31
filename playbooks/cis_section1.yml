@@ -3,11 +3,13 @@
   hosts: swarm
   become: yes
   vars:
-    script_local: "../scripts/cis_section1.sh"
-    script_remote: "/tmp/cis_section1.sh"
+    script_remediate_local: "../scripts/cis_section1.sh"
+    script_audit_local: "../tests/cis_section1_audit.sh"
+    script_remediate_remote: "/tmp/cis_section1.sh"
+    script_audit_remote: "/tmp/cis_section1_audit.sh"
 
   tasks:
-    # --- SAFETY CHECK (Hỏi xác nhận) ---
+    # --- 1. SAFETY CHECK ---
     - name: "Confirm Section 1 Execution"
       pause:
         prompt: "WARNING: Apply Auditd Rules on all nodes. Continue? (yes/no)"
@@ -17,25 +19,66 @@
 
     - name: "Abort Execution"
       meta: end_play
-      when: 
+      when:
         - not ansible_check_mode
         - prompt.user_input | default('no') | lower not in ['yes', 'y']
 
-    # --- EXECUTION ---
-    - name: Copy Audit Script
+    # --- 2. PREPARATION (Copy scripts) ---
+    - name: Copy Audit Script to Remote
       copy:
-        src: "{{ script_local }}"
-        dest: "{{ script_remote }}"
-        mode: '0755'
+        src: "{{ script_audit_local }}"
+        dest: "{{ script_audit_remote }}"
+        mode: "0755"
 
-    - name: Execute Audit Script
-      shell: "{{ script_remote }}"
-      register: output
-      changed_when: "'[APPLY]' in output.stdout or '[INSTALL]' in output.stdout"
+    - name: Copy Remediation Script to Remote
+      copy:
+        src: "{{ script_remediate_local }}"
+        dest: "{{ script_remediate_remote }}"
+        mode: "0755"
 
-    - name: Show Result
+    # --- 3. PRE-CHECK ---
+    - name: Run Pre-check (Audit)
+      shell: "{{ script_audit_remote }}"
+      register: pre_check_output
+      changed_when: false # Không báo 'Changed' vì chỉ đọc/kiểm tra
+      ignore_errors: yes
+
+    - name: Show Pre-check Results
       debug:
-        msg: "{{ output.stdout_lines }}"
+        msg:
+          - "--- KẾT QUẢ KIỂM TRA BAN ĐẦU ---"
+          - "{{ pre_check_output.stdout_lines }}"
 
-    - name: Cleanup Script
-      file: path="{{ script_remote }}" state=absent
+    # --- 4. EXECUTION (Chỉ chạy nếu Pre-check có lỗi) ---
+    - name: Execute Remediation Script
+      shell: "{{ script_remediate_remote }}"
+      register: remediate_output
+      when: "'[FAIL]' in pre_check_output.stdout"
+
+    - name: Show Remediation Log
+      debug:
+        var: remediate_output.stdout_lines
+      when: remediate_output.changed
+
+    # --- 5. POST-CHECK ---
+    - name: Run Post-check (Audit Verify)
+      shell: "{{ script_audit_remote }}"
+      register: post_check_output
+      changed_when: false
+      when: remediate_output.changed
+
+    - name: Show Final Results
+      debug:
+        msg:
+          - "--- KẾT QUẢ SAU KHI CẤU HÌNH ---"
+          - "{{ post_check_output.stdout_lines }}"
+      when: remediate_output.changed
+
+    # --- 6. CLEANUP ---
+    - name: Cleanup Scripts
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ script_remediate_remote }}"
+        - "{{ script_audit_remote }}"

@@ -1,16 +1,16 @@
 ---
-- name: Apply CIS Level 1 - Section 3 (File Permissions)
+- name: Apply CIS Level 1 - Section 5 (Container Config)
   hosts: swarm
   become: yes
   vars:
-    script_local: "../scripts/cis_section3.sh"
-    script_remote: "/tmp/cis_section3.sh"
+    script_local: "../tests/cis_section5_audit.sh"
+    script_remote: "/tmp/cis_section5_audit.sh"
 
   tasks:
     # --- SAFETY CHECK (Hỏi xác nhận) ---
-    - name: "Confirm Section 3 Execution"
+    - name: "Confirm Section 5 Execution"
       pause:
-        prompt: "WARNING: Fix Docker File Permissions on all nodes. Continue? (yes/no)"
+        prompt: "WARNING: Check container config on all nodes. Continue? (yes/no)"
       register: prompt
       when: not ansible_check_mode
       run_once: true

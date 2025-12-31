@@ -8,7 +8,7 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-echo ">>> Starting Docker Secret creation from $ENV_FILE..."
+echo ">>> 7.4 Starting Docker Secret creation from $ENV_FILE..."
 
 while IFS= read -r line || [ -n "$line" ]; do
     # Bỏ qua dòng trống và comment

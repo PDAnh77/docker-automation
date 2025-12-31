@@ -16,7 +16,7 @@
 
     - name: "Abort Execution"
       meta: end_play
-      when: 
+      when:
         - not ansible_check_mode
         - prompt_exec.user_input | default('no') | trim | lower not in ['yes', 'y']
 
@@ -37,7 +37,7 @@
       copy:
         src: "{{ script_local }}"
         dest: "{{ script_remote }}"
-        mode: '0755'
+        mode: "0755"
 
     - name: Execute Script
       # Thêm filter | lower để đảm bảo Bash nhận được chuỗi "true" thường

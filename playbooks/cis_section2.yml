@@ -19,7 +19,7 @@
     - name: "Abort Execution"
       fail:
         msg: "Playbook aborted by user."
-      when: 
+      when:
         - not ansible_check_mode
         - prompt.user_input | default('no') | lower not in ['yes', 'y']
 
@@ -28,7 +28,7 @@
       copy:
         src: "{{ script_manager_local }}"
         dest: "{{ script_manager_remote }}"
-        mode: '0755'
+        mode: "0755"
 
     - name: Execute Rsyslog Configuration
       shell: "{{ script_manager_remote }}"
@@ -47,29 +47,68 @@
   hosts: workers
   become: yes
   vars:
-    script_worker_local: "../scripts/cis_section2_worker.sh"
-    script_worker_remote: "/tmp/cis_section2_worker.sh"
+    script_worker_remediate_local: "../scripts/cis_section2_worker.sh"
+    script_worker_remediate_remote: "/tmp/cis_section2_worker.sh"
+    script_worker_audit_local: "../tests/cis_section2_audit.sh"
+    script_worker_audit_remote: "/tmp/cis_section2_audit.sh"
     manager_ip: "{{ groups['managers'][0] }}"
 
   tasks:
-    - name: Copy Worker Script to Remote
+    - name: Copy Worker Remediation Script to Remote
       copy:
-        src: "{{ script_worker_local }}"
-        dest: "{{ script_worker_remote }}"
-        mode: '0755'
+        src: "{{ script_worker_remediate_local }}"
+        dest: "{{ script_worker_remediate_remote }}"
+        mode: "0755"
+
+    - name: Copy Worker Audit Script to Remote
+      copy:
+        src: "{{ script_worker_audit_local }}"
+        dest: "{{ script_worker_audit_remote }}"
+        mode: "0755"
+
+    # --- PRE-CHECK ---
+    - name: Run Pre-check (Audit)
+      shell: "{{ script_worker_audit_remote }}"
+      register: pre_check_output
+      changed_when: false # Không báo 'Changed' vì chỉ đọc/kiểm tra
+      ignore_errors: yes
+
+    - name: Show Pre-check Results
+      debug:
+        msg:
+          - "--- KẾT QUẢ KIỂM TRA BAN ĐẦU ---"
+          - "{{ pre_check_output.stdout_lines }}"
 
     # Chạy script và truyền tham số IP Manager
     - name: Execute Docker Configuration Script
-      shell: "{{ script_worker_remote }} {{ manager_ip }}"
+      shell: "{{ script_worker_remediate_remote }} {{ manager_ip }}"
       register: worker_output
-      changed_when:
-        - "'Restarting Docker' in worker_output.stdout"
-        - "'Installing jq' in worker_output.stdout"
+      when: "'[FAIL]' in pre_check_output.stdout"
 
     # Hiển thị kết quả (Debug)
     - name: Show Worker Execution Result
       debug:
         msg: "{{ worker_output.stdout_lines }}"
+      when: worker_output.changed
 
-    - name: Cleanup Worker Script
-      file: path="{{ script_worker_remote }}" state=absent
+    # --- POST-CHECK ---
+    - name: Run Post-check (Audit Verify)
+      shell: "{{ script_worker_audit_remote }}"
+      register: post_check_output
+      changed_when: false
+      when: worker_output.changed
+
+    - name: Show Final Results
+      debug:
+        msg:
+          - "--- KẾT QUẢ SAU KHI CẤU HÌNH ---"
+          - "{{ post_check_output.stdout_lines }}"
+      when: worker_output.changed
+
+    - name: Cleanup Scripts
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ script_worker_remediate_remote }}"
+        - "{{ script_worker_audit_remote }}"
